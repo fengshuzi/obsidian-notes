@@ -1,0 +1,10 @@
+{
+    "id": "obsidian-notes",
+    "name": "备忘录同步",
+    "version": "1.0.0",
+    "minAppVersion": "1.2.8",
+    "description": "从 macOS 备忘录同步笔记到 Obsidian 仓库的备忘录文件夹",
+    "author": "Your Name",
+    "authorUrl": "https://github.com/yourusername",
+    "isDesktopOnly": true
+}
