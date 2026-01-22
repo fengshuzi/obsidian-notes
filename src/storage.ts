@@ -190,45 +190,70 @@ export class NotesStorage {
         }
     }
 
+    /**
+     * 使用正则表达式将表格 HTML 转换为 Markdown
+     * 轻量级方案，不依赖 JSDOM
+     */
+    private convertTableToMarkdown(tableHtml: string): string {
+        // 移除 div 和 font 标签
+        tableHtml = tableHtml.replace(/<\/?div[^>]*>/gi, '');
+        tableHtml = tableHtml.replace(/<\/?font[^>]*>/gi, '');
+        
+        // 提取所有行
+        const rowMatches = tableHtml.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi);
+        if (!rowMatches || rowMatches.length === 0) {
+            return tableHtml; // 无法解析，返回原始 HTML
+        }
+        
+        const rows: string[][] = [];
+        
+        // 解析每一行
+        for (const rowHtml of rowMatches) {
+            const cellMatches = rowHtml.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi);
+            if (!cellMatches) continue;
+            
+            const cells: string[] = [];
+            for (const cellHtml of cellMatches) {
+                // 提取单元格内容
+                const content = cellHtml
+                    .replace(/<t[dh][^>]*>/gi, '')
+                    .replace(/<\/t[dh]>/gi, '')
+                    .replace(/<[^>]+>/g, '') // 移除所有 HTML 标签
+                    .trim();
+                cells.push(content);
+            }
+            
+            if (cells.length > 0) {
+                rows.push(cells);
+            }
+        }
+        
+        if (rows.length === 0) {
+            return tableHtml; // 无法解析，返回原始 HTML
+        }
+        
+        // 构建 Markdown 表格
+        let markdown = '\n\n';
+        
+        // 第一行作为表头
+        markdown += '| ' + rows[0].join(' | ') + ' |\n';
+        
+        // 分隔线
+        markdown += '| ' + rows[0].map(() => '---').join(' | ') + ' |\n';
+        
+        // 数据行
+        for (let i = 1; i < rows.length; i++) {
+            markdown += '| ' + rows[i].join(' | ') + ' |\n';
+        }
+        
+        markdown += '\n';
+        
+        return markdown;
+    }
+
     private async extractAttachments(htmlBody: string, noteTitle: string): Promise<{ attachments: Attachment[], markdownBody: string }> {
         const attachments: Attachment[] = [];
         let counter = 1;
-        
-        // 调试：检查是否包含 checklist 相关的 HTML
-        if (htmlBody.includes('<ul') || htmlBody.includes('<li')) {
-            console.log('\n=== CHECKLIST DEBUG ===');
-            console.log('笔记标题:', noteTitle);
-            
-            // 提取所有 ul 标签
-            const ulMatches = htmlBody.match(/<ul[^>]*>[\s\S]*?<\/ul>/gi);
-            if (ulMatches) {
-                console.log(`找到 ${ulMatches.length} 个 <ul> 标签`);
-                ulMatches.forEach((ul, index) => {
-                    console.log(`\n--- UL ${index + 1} ---`);
-                    console.log(ul.substring(0, 500)); // 只显示前500字符
-                });
-            }
-            
-            // 提取所有 li 标签
-            const liMatches = htmlBody.match(/<li[^>]*>[\s\S]*?<\/li>/gi);
-            if (liMatches) {
-                console.log(`\n找到 ${liMatches.length} 个 <li> 标签`);
-                liMatches.slice(0, 5).forEach((li, index) => {
-                    console.log(`\n--- LI ${index + 1} ---`);
-                    console.log(li);
-                });
-            }
-            
-            // 检查是否有 checkbox 相关的元素
-            if (htmlBody.includes('checkbox') || htmlBody.includes('☑') || htmlBody.includes('☐')) {
-                console.log('\n发现 checkbox 相关内容！');
-                if (htmlBody.includes('checkbox')) console.log('- 包含 "checkbox" 字符串');
-                if (htmlBody.includes('☑')) console.log('- 包含 ☑ 字符');
-                if (htmlBody.includes('☐')) console.log('- 包含 ☐ 字符');
-            }
-            
-            console.log('=== END DEBUG ===\n');
-        }
         
         // 匹配 <img> 标签中的 base64 图片
         // 先移除所有换行符，然后再匹配
@@ -236,11 +261,13 @@ export class NotesStorage {
         const imgRegex = /<img[^>]+src="data:image\/([^;]+);base64,([^"]+)"[^>]*>/gi;
         let match;
 
-        console.log('\n=== 图片提取调试 ===');
-        console.log('笔记标题:', noteTitle);
-        console.log('HTML 中是否包含 <img>:', htmlBody.includes('<img'));
-        console.log('HTML 中是否包含 base64:', htmlBody.includes('base64'));
-        console.log('清理后的 HTML 长度:', processedHtml.length);
+        console.log('\n=== 处理笔记:', noteTitle, '===');
+        
+        // 检查是否包含表格
+        const hasTable = htmlBody.includes('<table');
+        if (hasTable) {
+            console.log('✓ 发现表格');
+        }
 
         while ((match = imgRegex.exec(processedHtml)) !== null) {
             try {
@@ -248,13 +275,12 @@ export class NotesStorage {
                 const base64Data = match[2];
                 const fullImgTag = match[0];
                 
-                console.log(`找到图片 ${counter}: 格式=${format}, base64长度=${base64Data.length}`);
+                console.log(`✓ 找到图片 ${counter}: 格式=${format}`);
                 
                 // 解码 base64 数据
                 const buffer = Buffer.from(base64Data, 'base64');
                 
                 const filename = `${this.sanitizeFileName(noteTitle)}-${String(counter).padStart(3, '0')}.${format}`;
-                console.log(`保存为: ${filename}`);
                 
                 attachments.push({
                     filename: filename,
@@ -268,15 +294,32 @@ export class NotesStorage {
                 
                 counter++;
             } catch (error) {
-                console.error("解析图片失败:", error);
+                console.error("✗ 解析图片失败:", error);
             }
         }
         
-        console.log(`共提取 ${attachments.length} 张图片`);
-        console.log('=== 图片提取结束 ===\n');
+        if (attachments.length > 0) {
+            console.log(`✓ 共提取 ${attachments.length} 张图片`);
+        }
 
-        // 使用 Turndown 转换 HTML 为 Markdown
+        // 先用 Turndown 转换 HTML 为 Markdown
         let markdownBody = this.turndownService.turndown(processedHtml);
+        
+        // 处理表格（如果有）- 在 Markdown 中替换
+        if (hasTable) {
+            // 提取原始 HTML 中的所有表格
+            const tableMatches = htmlBody.match(/<table[^>]*>[\s\S]*?<\/table>/gi);
+            if (tableMatches) {
+                for (const tableHtml of tableMatches) {
+                    // 转换为 Markdown 表格
+                    const markdownTable = this.convertTableToMarkdown(tableHtml);
+                    // 在 Markdown 中查找并替换对应的 HTML 表格
+                    // Turndown 可能保留了原始 HTML，所以直接替换
+                    markdownBody = markdownBody.replace(/<table[^>]*>[\s\S]*?<\/table>/i, markdownTable);
+                }
+                console.log('✓ 表格转换完成');
+            }
+        }
         
         // 清理开头的所有空白字符（换行、空格、br 等）
         markdownBody = markdownBody.replace(/^[\s\n\r<br>\/\\]+/, '');
@@ -289,6 +332,8 @@ export class NotesStorage {
         
         // 清理结尾的多余空行
         markdownBody = markdownBody.replace(/\n+$/, '\n');
+
+        console.log('=== 处理完成 ===\n');
 
         return { attachments, markdownBody };
     }
