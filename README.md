@@ -80,6 +80,18 @@ npm run release
 - macOS 系统
 - Obsidian 1.2.8 或更高版本
 
+### 可选：安装 pandoc 优化表格同步
+
+建议安装 [pandoc](https://pandoc.org/) 以获得更好的表格转换效果：
+
+```bash
+brew install pandoc
+```
+
+安装后插件会自动检测并使用 pandoc 转换表格，将 macOS 备忘录的 HTML 表格完美转换为 Markdown 表格格式。
+
+如果未安装 pandoc，插件会使用内置的正则方案转换表格（效果较基础）。
+
 ## 许可证
 
 MIT

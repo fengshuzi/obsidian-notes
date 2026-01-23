@@ -27,20 +27,24 @@ export interface Attachment {
 export class NotesStorage {
     private folderName: string;
     private turndownService: TurndownService;
+    private hasPandoc: boolean = false;
 
     constructor(folderName: string) {
         this.folderName = folderName;
-        
+
+        // 检测 pandoc 是否可用
+        this.checkPandocAvailability();
+
         // 初始化 Turndown 服务，支持 GitHub Flavored Markdown
         this.turndownService = new TurndownService({
             headingStyle: "atx",
             codeBlockStyle: "fenced",
             bulletListMarker: "-",
         });
-        
+
         // 使用 GFM 插件（包含表格、删除线、任务列表等）
         this.turndownService.use(gfm);
-        
+
         // 修复 br - macOS Notes 在 li 标签内使用 <br>
         // 在列表项内的 br 应该被忽略，其他地方使用软换行
         this.turndownService.addRule("br", {
@@ -59,7 +63,7 @@ export class NotesStorage {
                 return "  \n";
             },
         });
-        
+
         // 修复空的标题标签（如 <h1><br></h1>）
         this.turndownService.addRule("emptyHeading", {
             filter: (node: HTMLElement) => {
@@ -72,7 +76,7 @@ export class NotesStorage {
                 return "";
             },
         });
-        
+
         // 修复空的列表项（如 <li><br></li>）
         this.turndownService.addRule("emptyListItem", {
             filter: (node: HTMLElement) => {
@@ -85,7 +89,7 @@ export class NotesStorage {
                 return "";
             },
         });
-        
+
         // 修复空的 div 标签（如 <div><br></div>）
         this.turndownService.addRule("emptyDiv", {
             filter: (node: HTMLElement) => {
@@ -99,7 +103,7 @@ export class NotesStorage {
                 return "";
             },
         });
-        
+
         // 修复 div 标签 - macOS Notes 使用 div 作为段落
         this.turndownService.addRule("div", {
             filter: "div",
@@ -112,6 +116,46 @@ export class NotesStorage {
                 return content + "\n";
             },
         });
+    }
+
+    /**
+     * 检测系统是否安装了 pandoc
+     */
+    private checkPandocAvailability(): void {
+        try {
+            const { execSync } = require('child_process');
+            execSync('which pandoc', { stdio: 'ignore' });
+            this.hasPandoc = true;
+            console.log('✓ 检测到 pandoc，将使用 pandoc 转换表格');
+        } catch {
+            this.hasPandoc = false;
+            console.log('✗ 未检测到 pandoc，将使用正则方案转换表格');
+        }
+    }
+
+    /**
+     * 使用 pandoc 将表格 HTML 转换为 Markdown
+     * 预处理清理脏 HTML 属性后调用 pandoc
+     */
+    private async convertTableWithPandoc(tableHtml: string): Promise<string> {
+        // 预处理：清理 macOS Notes 的脏属性
+        let cleanedHtml = tableHtml
+            .replace(/ style="[^"]*"/gi, '')
+            .replace(/ valign="[^"]*"/gi, '')
+            .replace(/ cellspacing="[^"]*"/gi, '')
+            .replace(/ cellpadding="[^"]*"/gi, '')
+            .replace(/<\/?div>/gi, '')
+            .replace(/<font[^>]*>/gi, '')
+            .replace(/<\/font>/gi, '');
+
+        try {
+            // 调用 pandoc 转换
+            const { stdout } = await execAsync(`echo ${JSON.stringify(cleanedHtml)} | pandoc -f html -t gfm`);
+            return '\n\n' + stdout.trim() + '\n\n';
+        } catch (error) {
+            console.error('pandoc 转换失败，回退到正则方案:', error);
+            return this.convertTableToMarkdown(tableHtml);
+        }
     }
 
     setFolderName(folderName: string): void {
@@ -150,7 +194,7 @@ export class NotesStorage {
             `;
 
             const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
-            
+
             if (!stdout || stdout.trim() === "") {
                 return [];
             }
@@ -166,10 +210,10 @@ export class NotesStorage {
                 if (parts.length >= 7) {
                     const noteTitle = parts[1].trim();
                     const htmlBody = parts[3];
-                    
+
                     // 提取附件并转换为 Markdown
                     const { attachments, markdownBody } = await this.extractAttachments(htmlBody, noteTitle);
-                    
+
                     notes.push({
                         id: parts[0].trim(),
                         title: noteTitle,
@@ -198,20 +242,20 @@ export class NotesStorage {
         // 移除 div 和 font 标签
         tableHtml = tableHtml.replace(/<\/?div[^>]*>/gi, '');
         tableHtml = tableHtml.replace(/<\/?font[^>]*>/gi, '');
-        
+
         // 提取所有行
         const rowMatches = tableHtml.match(/<tr[^>]*>[\s\S]*?<\/tr>/gi);
         if (!rowMatches || rowMatches.length === 0) {
             return tableHtml; // 无法解析，返回原始 HTML
         }
-        
+
         const rows: string[][] = [];
-        
+
         // 解析每一行
         for (const rowHtml of rowMatches) {
             const cellMatches = rowHtml.match(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi);
             if (!cellMatches) continue;
-            
+
             const cells: string[] = [];
             for (const cellHtml of cellMatches) {
                 // 提取单元格内容
@@ -222,39 +266,39 @@ export class NotesStorage {
                     .trim();
                 cells.push(content);
             }
-            
+
             if (cells.length > 0) {
                 rows.push(cells);
             }
         }
-        
+
         if (rows.length === 0) {
             return tableHtml; // 无法解析，返回原始 HTML
         }
-        
+
         // 构建 Markdown 表格
         let markdown = '\n\n';
-        
+
         // 第一行作为表头
         markdown += '| ' + rows[0].join(' | ') + ' |\n';
-        
+
         // 分隔线
         markdown += '| ' + rows[0].map(() => '---').join(' | ') + ' |\n';
-        
+
         // 数据行
         for (let i = 1; i < rows.length; i++) {
             markdown += '| ' + rows[i].join(' | ') + ' |\n';
         }
-        
+
         markdown += '\n';
-        
+
         return markdown;
     }
 
     private async extractAttachments(htmlBody: string, noteTitle: string): Promise<{ attachments: Attachment[], markdownBody: string }> {
         const attachments: Attachment[] = [];
         let counter = 1;
-        
+
         // 匹配 <img> 标签中的 base64 图片
         // 先移除所有换行符，然后再匹配
         let processedHtml = htmlBody.replace(/\r?\n|\r/g, '');
@@ -262,7 +306,7 @@ export class NotesStorage {
         let match;
 
         console.log('\n=== 处理笔记:', noteTitle, '===');
-        
+
         // 检查是否包含表格
         const hasTable = htmlBody.includes('<table');
         if (hasTable) {
@@ -274,45 +318,50 @@ export class NotesStorage {
                 const format = match[1]; // png, jpeg, gif, etc.
                 const base64Data = match[2];
                 const fullImgTag = match[0];
-                
+
                 console.log(`✓ 找到图片 ${counter}: 格式=${format}`);
-                
+
                 // 解码 base64 数据
                 const buffer = Buffer.from(base64Data, 'base64');
-                
+
                 const filename = `${this.sanitizeFileName(noteTitle)}-${String(counter).padStart(3, '0')}.${format}`;
-                
+
                 attachments.push({
                     filename: filename,
                     data: buffer,
                     format: format,
                 });
-                
+
                 // 替换为普通的 HTML img 标签，让 Turndown 来转换
                 const imgTag = `<img src="attachments/${filename}" alt="">`;
                 processedHtml = processedHtml.replace(fullImgTag, imgTag);
-                
+
                 counter++;
             } catch (error) {
                 console.error("✗ 解析图片失败:", error);
             }
         }
-        
+
         if (attachments.length > 0) {
             console.log(`✓ 共提取 ${attachments.length} 张图片`);
         }
 
         // 先用 Turndown 转换 HTML 为 Markdown
         let markdownBody = this.turndownService.turndown(processedHtml);
-        
+
         // 处理表格（如果有）- 在 Markdown 中替换
         if (hasTable) {
             // 提取原始 HTML 中的所有表格
             const tableMatches = htmlBody.match(/<table[^>]*>[\s\S]*?<\/table>/gi);
             if (tableMatches) {
                 for (const tableHtml of tableMatches) {
-                    // 转换为 Markdown 表格
-                    const markdownTable = this.convertTableToMarkdown(tableHtml);
+                    // 根据 pandoc 可用性选择转换方案
+                    let markdownTable: string;
+                    if (this.hasPandoc) {
+                        markdownTable = await this.convertTableWithPandoc(tableHtml);
+                    } else {
+                        markdownTable = this.convertTableToMarkdown(tableHtml);
+                    }
                     // 在 Markdown 中查找并替换对应的 HTML 表格
                     // Turndown 可能保留了原始 HTML，所以直接替换
                     markdownBody = markdownBody.replace(/<table[^>]*>[\s\S]*?<\/table>/i, markdownTable);
@@ -320,16 +369,16 @@ export class NotesStorage {
                 console.log('✓ 表格转换完成');
             }
         }
-        
+
         // 清理开头的所有空白字符（换行、空格、br 等）
         markdownBody = markdownBody.replace(/^[\s\n\r<br>\/\\]+/, '');
-        
+
         // 清理多余的换行（连续3个以上换行替换为2个）
         markdownBody = markdownBody.replace(/\n{3,}/g, '\n\n');
-        
+
         // 清理行尾的空格
         markdownBody = markdownBody.replace(/ +$/gm, '');
-        
+
         // 清理结尾的多余空行
         markdownBody = markdownBody.replace(/\n+$/, '\n');
 
