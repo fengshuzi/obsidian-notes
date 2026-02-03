@@ -1,103 +1,80 @@
-# Obsidian Notes 同步插件
+# Obsidian Notes
 
-从 macOS 备忘录同步笔记到 Obsidian 仓库的备忘录文件夹。
+多源笔记同步到 Obsidian：**macOS 备忘录**、**Joplin**、**思源笔记** 等，仅手动刷新。
 
 ## 功能特性
 
-- 🔄 从 macOS 备忘录同步笔记到 Obsidian
-- 📁 支持指定备忘录文件夹
-- ⏰ 支持自动定时同步
-- 🎯 可自定义 Obsidian 目标文件夹
-- 📝 保留笔记的创建和修改时间
-- 🖼️ **自动提取并保存图片**：将 base64 图片转换为本地文件
-- 📷 支持多种图片格式（PNG、JPEG、GIF 等）
-- 🔗 使用相对路径引用图片，便于管理
+### 多源刷新
+
+- 侧边栏「刷新」按钮、命令「刷新（按配置更新）」：按设置勾选依次执行 **macOS 备忘录**、**Joplin**、**思源笔记** 同步
+- 可单独执行：命令「同步 macOS 备忘录」「从 Joplin 导入笔记」「从思源笔记导入」
+
+### macOS 备忘录（仅 macOS）
+
+- 从系统「备忘录」App 指定文件夹同步到 Obsidian
+- 支持图片、表格等，可配置 App 内文件夹名与 Obsidian 目标文件夹
+
+### Joplin 同步
+
+- ✅ 导入指定 Joplin 笔记本及其所有子笔记本
+- ✅ 保持原有的文件夹层级结构
+- ✅ 自动处理图片和附件资源
+- ✅ 将 Joplin 资源链接转换为 Obsidian 格式
+- ✅ 图片自动重命名：按 `笔记名-001.ext` 格式命名
+- ✅ 可配置输出目录和附件文件夹名称
+- ✅ 设置界面一键导入
+
+### 思源笔记同步
+
+- ✅ **仅同步指定路径**：与 Joplin 一致，只同步配置的「要同步的路径」及其子路径（如 `/` 整个笔记本或 `/Folder` 某文件夹）
+- ✅ **图片与 Joplin 一致**：图片从思源 `data/assets` 复制到 vault 的图片文件夹（与 Joplin 共用同一配置），链接改为简写路径
+- ✅ 需思源内核运行并开启 API（设置 → 关于 → API Token）
+- ✅ 可配置 API 地址、Token、笔记本 ID、路径、Obsidian 输出文件夹、思源资源目录
+
+## 安装方法
+
+### 从 GitHub Release 安装（推荐）
+
+1. 前往 [Releases](../../releases) 页面下载最新版本
+2. 下载 `main.js`、`manifest.json`，如有 `styles.css`、`sql-wasm.wasm` 一并下载
+3. 在 Obsidian 库中创建插件目录：`.obsidian/plugins/obsidian-notes/`
+4. 将下载的文件复制到该目录
+5. 重启 Obsidian 或刷新插件列表，在设置中启用「Obsidian Notes」
+
+### 手动构建
+
+```bash
+cd obsidian-notes
+npm install
+npm run build
+# 将 dist/ 下的文件复制到 .obsidian/plugins/obsidian-notes/
+```
 
 ## 使用方法
 
-### 安装
+1. 打开 Obsidian 设置 → 第三方插件 → **Obsidian Notes**
+2. **刷新时更新**：勾选「刷新时同步 macOS 备忘录」和/或「刷新时同步 Joplin」和/或「刷新时同步思源笔记」
+3. **macOS 备忘录**：配置「备忘录」App 内文件夹名称、Obsidian 目标文件夹（仅 macOS）
+4. **Joplin**：配置数据库路径、资源目录、要导入的笔记本名称、输出文件夹等；导入前请先**关闭 Joplin**
+5. **思源笔记**：配置 API 地址、Token、笔记本 ID、要同步的路径（仅该路径及子路径）、Obsidian 输出文件夹、思源资源目录；需思源内核运行
+6. 侧边栏点击刷新图标，或命令面板「刷新（按配置更新）」执行同步；也可单独使用「同步 macOS 备忘录」「从 Joplin 导入笔记」「从思源笔记导入」
 
-1. 将插件文件复制到 Obsidian vault 的 `.obsidian/plugins/obsidian-notes/` 目录
-2. 在 Obsidian 设置中启用插件
+详细说明与目录结构见原 Joplin 导入文档（逻辑一致，仅插件名改为 Obsidian Notes）。
 
-### 配置
+## 后续计划
 
-在插件设置中可以配置：
-
-- **备忘录文件夹名称**：指定要同步的 macOS 备忘录文件夹（默认：Notes）
-- **Obsidian 目标文件夹**：笔记将同步到此文件夹（默认：备忘录）
-- **启用自动同步**：是否定期自动同步
-- **同步间隔**：自动同步的时间间隔（分钟）
-
-### 命令
-
-- **同步备忘录**：手动触发同步
-- **立即同步备忘录（一次）**：执行一次性同步
-
-### 图片处理
-
-插件会自动处理备忘录中的图片：
-
-1. **自动提取**：从 HTML 中提取 base64 编码的图片
-2. **保存到本地**：图片保存在 `备忘录/attachments/` 文件夹
-3. **自动命名**：格式为 `笔记标题-001.png`、`笔记标题-002.jpg` 等
-4. **Markdown 引用**：使用相对路径 `![](attachments/图片名.png)`
-
-**文件结构示例：**
-```
-备忘录/
-├── attachments/
-│   ├── 我的笔记-001.png
-│   ├── 我的笔记-002.jpg
-│   └── 工作计划-001.png
-├── 我的笔记.md
-└── 工作计划.md
-```
+- 其他 Markdown 笔记来源（按需扩展）
 
 ## 开发
 
-### 构建
-
 ```bash
 npm install
-npm run build
+npm run dev    # 开发模式
+npm run build  # 构建
+npm run deploy # 部署到本地 vault
+npm run release # 发布到 GitHub
 ```
-
-### 部署到本地 vault
-
-```bash
-npm run deploy
-```
-
-### 发布新版本
-
-```bash
-npm run release
-```
-
-## 系统要求
-
-- macOS 系统
-- Obsidian 1.2.8 或更高版本
-
-### 可选：安装 pandoc 优化表格同步
-
-建议安装 [pandoc](https://pandoc.org/) 以获得更好的表格转换效果：
-
-```bash
-brew install pandoc
-```
-
-安装后插件会自动检测并使用 pandoc 转换表格，将 macOS 备忘录的 HTML 表格完美转换为 Markdown 表格格式。
-
-如果未安装 pandoc，插件会使用内置的正则方案转换表格（效果较基础）。
 
 ## 许可证
 
 MIT
-
-## 注意事项
-
-- 此插件仅支持 macOS 系统
-- 需要授予 Obsidian 访问备忘录的权限
-- 同步时会覆盖已存在的同名文件
