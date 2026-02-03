@@ -391,8 +391,9 @@ export default class ObsidianNotesPlugin extends Plugin {
       const db = new SQL.Database(dbBuffer);
 
       const vaultPath = (this.app.vault.adapter as any).basePath;
-      const outputBasePath = outputFolder
-        ? path.join(vaultPath, outputFolder)
+      const outputFolderNorm = (outputFolder || '').replace(/\\/g, '/').trim() || 'joplin';
+      const outputBasePath = outputFolderNorm
+        ? path.join(vaultPath, ...outputFolderNorm.split('/'))
         : vaultPath;
 
       if (!fs.existsSync(outputBasePath)) {
@@ -447,7 +448,7 @@ export default class ObsidianNotesPlugin extends Plugin {
       }
 
       db.close();
-      await this.refreshVault(outputFolder);
+      await this.refreshVault(normalizePath(outputFolder.replace(/\\/g, '/')));
 
       new Notice(`🎉 导入完成！成功 ${successCount} 个，失败 ${failCount} 个`);
     } catch (error) {
@@ -458,11 +459,11 @@ export default class ObsidianNotesPlugin extends Plugin {
 
   private async refreshVault(folderPath: string) {
     await new Promise(resolve => setTimeout(resolve, 1000));
-    if (folderPath) {
-      const folder = this.app.vault.getAbstractFileByPath(folderPath);
-      if (folder && folder instanceof TFolder) {
-        await this.app.vault.adapter.list(folderPath);
-      }
+    if (!folderPath) return;
+    const vaultPathNorm = normalizePath(folderPath.replace(/\\/g, '/'));
+    const folder = this.app.vault.getAbstractFileByPath(vaultPathNorm);
+    if (folder && folder instanceof TFolder) {
+      await this.app.vault.adapter.list(vaultPathNorm);
     }
   }
 
@@ -779,12 +780,12 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('输出文件夹')
-      .setDesc('Obsidian vault 中用于存放导入笔记的文件夹')
+      .setDesc('Obsidian vault 中用于存放导入笔记的文件夹，支持嵌套路径如 Bike/joplin')
       .addText(text => text
-        .setPlaceholder('joplin')
+        .setPlaceholder('joplin 或 Bike/joplin')
         .setValue(this.plugin.settings.outputFolder)
         .onChange(async (value) => {
-          this.plugin.settings.outputFolder = value || 'joplin';
+          this.plugin.settings.outputFolder = (value || 'joplin').replace(/\\/g, '/').trim();
           await this.plugin.saveSettings();
         }));
 
