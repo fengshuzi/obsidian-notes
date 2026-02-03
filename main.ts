@@ -448,7 +448,7 @@ export default class ObsidianNotesPlugin extends Plugin {
       }
 
       db.close();
-      await this.refreshVault(normalizePath(outputFolder.replace(/\\/g, '/')));
+      await this.refreshVault(outputFolderNorm);
 
       new Notice(`🎉 导入完成！成功 ${successCount} 个，失败 ${failCount} 个`);
     } catch (error) {
