@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import initSqlJs, { Database } from 'sql.js';
 import { NotesStorage } from './src/storage';
+import { syncNotion, type NotionPageEntry } from './src/notionSync';
 
 interface ObsidianNotesSettings {
   /** 刷新时是否同步 macOS 备忘录 */
@@ -12,6 +13,8 @@ interface ObsidianNotesSettings {
   refreshSyncJoplin: boolean;
   /** 刷新时是否同步思源笔记 */
   refreshSyncSiYuan: boolean;
+  /** 刷新时是否同步 Notion */
+  refreshSyncNotion: boolean;
   /** macOS 备忘录：要同步的 App 内文件夹名称 */
   memoFolderName: string;
   /** macOS 备忘录：在 Obsidian 中的目标文件夹 */
@@ -33,12 +36,21 @@ interface ObsidianNotesSettings {
   siyuanOutputFolder: string;
   /** 思源：资源目录（思源 data 下的 assets 路径，用于复制图片） */
   siyuanAssetsDir: string;
+  /** Notion：API Token（Integration 密钥） */
+  notionToken: string;
+  /** Notion：要同步的页面列表（每行一个 URL 或 page_id，可选用 Tab 分隔输出文件夹） */
+  notionPagesJson: string;
+  /** Notion：默认导出到的 vault 子文件夹 */
+  notionOutputFolder: string;
+  /** Notion：图片保存目录（相对 vault 根，默认 assets 即根目录下 assets） */
+  notionAssetsFolder: string;
 }
 
 const DEFAULT_SETTINGS: ObsidianNotesSettings = {
   refreshSyncMemo: true,
   refreshSyncJoplin: true,
   refreshSyncSiYuan: false,
+  refreshSyncNotion: false,
   memoFolderName: 'Notes',
   memoNotesFolder: '备忘录',
   joplinDbPath: '~/.config/joplin-desktop/database.sqlite',
@@ -51,7 +63,11 @@ const DEFAULT_SETTINGS: ObsidianNotesSettings = {
   siyuanNotebookId: '',
   siyuanPath: '/',
   siyuanOutputFolder: 'siyuan',
-  siyuanAssetsDir: '~/SiYuan/data/assets'
+  siyuanAssetsDir: '~/SiYuan/data/assets',
+  notionToken: '',
+  notionPagesJson: '',
+  notionOutputFolder: 'notion',
+  notionAssetsFolder: 'assets'
 };
 
 interface FolderHierarchy {
@@ -96,6 +112,11 @@ export default class ObsidianNotesPlugin extends Plugin {
       name: '从思源笔记导入',
       callback: () => this.syncSiYuan()
     });
+    this.addCommand({
+      id: 'import-notion-notes',
+      name: '从 Notion 导入',
+      callback: () => this.syncNotion()
+    });
 
     this.addSettingTab(new ObsidianNotesSettingTab(this.app, this));
   }
@@ -115,8 +136,12 @@ export default class ObsidianNotesPlugin extends Plugin {
       await this.syncSiYuan();
       messages.push('思源笔记');
     }
+    if (this.settings.refreshSyncNotion) {
+      await this.syncNotion();
+      messages.push('Notion');
+    }
     if (messages.length === 0) {
-      new Notice('请在设置中勾选刷新时要更新的来源（macOS 备忘录、Joplin 或思源笔记）');
+      new Notice('请在设置中勾选刷新时要更新的来源（macOS 备忘录、Joplin、思源笔记或 Notion）');
     }
   }
 
@@ -126,6 +151,7 @@ export default class ObsidianNotesPlugin extends Plugin {
       refreshSyncMemo: saved.refreshSyncMemo ?? DEFAULT_SETTINGS.refreshSyncMemo,
       refreshSyncJoplin: saved.refreshSyncJoplin ?? DEFAULT_SETTINGS.refreshSyncJoplin,
       refreshSyncSiYuan: saved.refreshSyncSiYuan ?? DEFAULT_SETTINGS.refreshSyncSiYuan,
+      refreshSyncNotion: saved.refreshSyncNotion ?? DEFAULT_SETTINGS.refreshSyncNotion,
       memoFolderName: saved.memoFolderName ?? DEFAULT_SETTINGS.memoFolderName,
       memoNotesFolder: saved.memoNotesFolder ?? DEFAULT_SETTINGS.memoNotesFolder,
       joplinDbPath: saved.joplinDbPath ?? DEFAULT_SETTINGS.joplinDbPath,
@@ -139,6 +165,10 @@ export default class ObsidianNotesPlugin extends Plugin {
       siyuanPath: saved.siyuanPath ?? DEFAULT_SETTINGS.siyuanPath,
       siyuanOutputFolder: saved.siyuanOutputFolder ?? DEFAULT_SETTINGS.siyuanOutputFolder,
       siyuanAssetsDir: saved.siyuanAssetsDir ?? DEFAULT_SETTINGS.siyuanAssetsDir,
+      notionToken: saved.notionToken ?? DEFAULT_SETTINGS.notionToken,
+      notionPagesJson: saved.notionPagesJson ?? DEFAULT_SETTINGS.notionPagesJson,
+      notionOutputFolder: saved.notionOutputFolder ?? DEFAULT_SETTINGS.notionOutputFolder,
+      notionAssetsFolder: saved.notionAssetsFolder ?? DEFAULT_SETTINGS.notionAssetsFolder,
     };
     if (this.notesStorage) {
       this.notesStorage.setFolderName(this.settings.memoFolderName);
@@ -580,6 +610,51 @@ export default class ObsidianNotesPlugin extends Plugin {
     return { content: out.replace(/&nbsp;/g, ' '), imageCount };
   }
 
+  /** 解析 Notion 页面配置字符串为 NotionPageEntry[]（每行一个 URL 或 id，可选用 Tab 分隔输出文件夹） */
+  private parseNotionPagesJson(jsonOrLines: string): NotionPageEntry[] {
+    const raw = (jsonOrLines || '').trim();
+    if (!raw) return [];
+    const entries: NotionPageEntry[] = [];
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      const tab = line.indexOf('\t');
+      if (tab >= 0) {
+        entries.push({ id: line.slice(0, tab).trim(), outputFolder: line.slice(tab + 1).trim() || undefined });
+      } else {
+        entries.push({ id: line.trim() });
+      }
+    }
+    return entries;
+  }
+
+  /** 从 Notion 导入（token 与多页面在设置中配置） */
+  async syncNotion(): Promise<void> {
+    const token = (this.settings.notionToken || '').trim();
+    if (!token) {
+      new Notice('请先在设置中填写 Notion API Token');
+      return;
+    }
+    const pages = this.parseNotionPagesJson(this.settings.notionPagesJson);
+    if (!pages.length) {
+      new Notice('请在设置中填写要同步的 Notion 页面（每行一个 URL 或 page_id）');
+      return;
+    }
+    new Notice('🔄 开始从 Notion 导入...');
+    try {
+      const result = await syncNotion(
+        this.app,
+        token,
+        pages,
+        this.settings.notionOutputFolder || 'notion',
+        this.settings.notionAssetsFolder || 'assets'
+      );
+      new Notice(`🎉 Notion 导入完成！成功 ${result.success} 页，失败 ${result.fail}，共 ${result.totalFiles} 个文件`);
+    } catch (error: any) {
+      console.error('Notion 导入失败:', error);
+      new Notice(`❌ Notion 导入失败: ${error?.message || error}`);
+    }
+  }
+
   /** 从思源笔记导入（仅同步指定路径，图片逻辑与 Joplin 一致） */
   async syncSiYuan(): Promise<void> {
     const { siyuanNotebookId, siyuanPath, siyuanOutputFolder } = this.settings;
@@ -708,6 +783,16 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.refreshSyncSiYuan)
         .onChange(async (v) => {
           this.plugin.settings.refreshSyncSiYuan = v;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('刷新时同步 Notion')
+      .setDesc('点击刷新时从 Notion 导入配置的页面到 Obsidian')
+      .addToggle(t => t
+        .setValue(this.plugin.settings.refreshSyncNotion)
+        .onChange(async (v) => {
+          this.plugin.settings.refreshSyncNotion = v;
           await this.plugin.saveSettings();
         }));
 
@@ -872,6 +957,56 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    containerEl.createEl('h3', { text: 'Notion 同步' });
+    containerEl.createEl('p', {
+      text: '使用 Notion Integration 密钥与要同步的页面 URL。每行一个页面；可选用 Tab 分隔指定该页面的输出文件夹。',
+      cls: 'setting-item-description'
+    });
+
+    new Setting(containerEl)
+      .setName('Notion API Token')
+      .setDesc('Notion 集成密钥（Integration token），在 notion.so 创建 Integration 后复制')
+      .addText(text => text
+        .setPlaceholder('ntn_xxx 或 secret_xxx')
+        .setValue(this.plugin.settings.notionToken)
+        .onChange(async (value) => {
+          this.plugin.settings.notionToken = (value || '').trim();
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('要同步的页面（多行）')
+      .setDesc('每行一个 Notion 页面 URL 或 page_id；可选：同一行用 Tab 分隔填写「输出文件夹」如 notion 或 Bike/notion')
+      .addTextArea(text => text
+        .setPlaceholder('https://notion.so/页面名-xxx\nhttps://notion.so/另一页-yyy\tOther/notion')
+        .setValue(this.plugin.settings.notionPagesJson)
+        .onChange(async (value) => {
+          this.plugin.settings.notionPagesJson = value || '';
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Notion 默认输出文件夹')
+      .setDesc('未在行内指定输出文件夹时，导出到此 vault 子文件夹（默认 notion）')
+      .addText(text => text
+        .setPlaceholder('notion')
+        .setValue(this.plugin.settings.notionOutputFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.notionOutputFolder = (value || 'notion').replace(/\\/g, '/').trim();
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Notion 图片保存目录')
+      .setDesc('图片保存位置，相对 vault 根目录。默认 assets 即根目录下 assets 文件夹')
+      .addText(text => text
+        .setPlaceholder('assets')
+        .setValue(this.plugin.settings.notionAssetsFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.notionAssetsFolder = (value || 'assets').replace(/\\/g, '/').trim();
+          await this.plugin.saveSettings();
+        }));
+
     containerEl.createEl('h3', { text: '导入操作' });
 
     new Setting(containerEl)
@@ -888,10 +1023,18 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
         .setButtonText('导入思源')
         .onClick(() => this.plugin.syncSiYuan()));
 
+    new Setting(containerEl)
+      .setName('从 Notion 导入')
+      .setDesc('点击按钮或使用命令「从 Notion 导入」')
+      .addButton(button => button
+        .setButtonText('导入 Notion')
+        .onClick(() => this.plugin.syncNotion()));
+
     containerEl.createEl('h3', { text: '使用说明' });
     const instructionsList = containerEl.createEl('ol');
     instructionsList.createEl('li', { text: 'Joplin：关闭 Joplin 应用后再导入；数据通常在 ~/.config/joplin-desktop/' });
     instructionsList.createEl('li', { text: '思源：保持思源内核运行，在设置中开启 API 并填写 Token、笔记本 ID 与路径' });
+    instructionsList.createEl('li', { text: 'Notion：在 notion.so 创建 Integration 并复制 Token；把要同步的页面分享给该 Integration；在「要同步的页面」中每行填一个 URL，可多页' });
     instructionsList.createEl('li', { text: '侧边栏「刷新」或命令「刷新（按配置更新）」会按勾选依次执行各来源' });
   }
 }

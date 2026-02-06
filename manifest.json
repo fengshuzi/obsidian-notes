@@ -3,7 +3,7 @@
   "name": "Obsidian Notes",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "多源笔记同步到 Obsidian：macOS 备忘录、Joplin、思源笔记等，仅手动刷新",
+  "description": "多源笔记同步到 Obsidian：macOS 备忘录、Joplin、思源笔记、Notion 等，仅手动刷新",
   "author": "lizhifeng",
   "isDesktopOnly": true
 }
