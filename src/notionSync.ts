@@ -433,6 +433,11 @@ function collectChildPages(blocks: any[], blockIdToChildren: Map<string, any[]>,
   return walk(blocks).then(() => ids);
 }
 
+/** 检查内容是否为空（去除空白字符后） */
+function isContentEmpty(content: string): boolean {
+  return !content || content.trim().replace(/\n+/g, "").length === 0;
+}
+
 async function exportPage(
   pageId: string,
   outputDir: string,
@@ -440,7 +445,7 @@ async function exportPage(
   token: string,
   blockIdToChildren: Map<string, any[]>,
   assetsLinkPrefix: string
-): Promise<{ path: string; title: string; content: string } | null> {
+): Promise<{ path: string; title: string; content: string; isEmpty: boolean } | null> {
   const id = normalizePageId(pageId);
   let page: any;
   try {
@@ -470,7 +475,7 @@ async function exportPage(
   );
 
   const filePath = outputDir + "/" + safeTitle + ".md";
-  return { path: filePath, title: safeTitle, content: mdBody };
+  return { path: filePath, title: safeTitle, content: mdBody, isEmpty: isContentEmpty(mdBody) };
 }
 
 async function exportTree(
@@ -490,29 +495,44 @@ async function exportTree(
   const result = await exportPage(pageId, outputDir, ctx, token, blockIdToChildren, assetsLinkPrefix);
   if (!result) return [];
   const exported: { path: string; content: string; title: string }[] = [];
-  exported.push({ path: result.path, content: result.content, title: result.title });
 
   const page = await getPage(id, token);
   const blocks = blockIdToChildren.get(id.replace(/-/g, "")) || [];
   const childIds = await collectChildPages(blocks, blockIdToChildren, token);
-  const childOutputDir = outputDir + "/" + result.title;
-  const assetsDir = ctx.notionAssetsDir.replace(/\/+$/, "");
-  const childPrefix = getAssetsLinkPrefix(childOutputDir, assetsDir);
-  for (const cid of childIds) {
-    const childResults = await exportTree(
-      cid,
-      childOutputDir,
-      ctx,
-      token,
-      blockIdToChildren,
-      seen,
-      vault,
-      childPrefix
-    );
-    for (const r of childResults) {
-      exported.push(r);
+
+  // 如果父页面内容为空但没有子页面，不创建任何文件
+  if (result.isEmpty && childIds.length === 0) {
+    return [];
+  }
+
+  // 如果父页面有内容，或者有子页面（即使父页面为空，子页面也需要放在以父页面标题命名的文件夹下）
+  // 只有当父页面有内容时才创建父页面的 .md
+  if (!result.isEmpty) {
+    exported.push({ path: result.path, content: result.content, title: result.title });
+  }
+
+  // 子页面导出到以父页面标题命名的文件夹（即使父页面为空）
+  if (childIds.length > 0) {
+    const childOutputDir = outputDir + "/" + result.title;
+    const assetsDir = ctx.notionAssetsDir.replace(/\/+$/, "");
+    const childPrefix = getAssetsLinkPrefix(childOutputDir, assetsDir);
+    for (const cid of childIds) {
+      const childResults = await exportTree(
+        cid,
+        childOutputDir,
+        ctx,
+        token,
+        blockIdToChildren,
+        seen,
+        vault,
+        childPrefix
+      );
+      for (const r of childResults) {
+        exported.push(r);
+      }
     }
   }
+
   return exported;
 }
 
