@@ -37,8 +37,11 @@ try {
   console.log(`📄 检测到 main.js: ${mainJsPath}\n`);
 
   const files = [mainJsPath, 'manifest.json'];
-  if (existsSync('dist/styles.css')) files.push('dist/styles.css');
-  if (existsSync('styles.css')) files.push('styles.css');
+  if (existsSync('dist/styles.css')) {
+    files.push('dist/styles.css');
+  } else if (existsSync('styles.css')) {
+    files.push('styles.css');
+  }
   if (existsSync('dist/sql-wasm.wasm')) files.push('dist/sql-wasm.wasm');
   if (existsSync('config.json')) files.push('config.json');
 
