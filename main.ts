@@ -48,7 +48,7 @@ interface ObsidianNotesSettings {
 
 const DEFAULT_SETTINGS: ObsidianNotesSettings = {
   refreshSyncMemo: true,
-  refreshSyncJoplin: true,
+  refreshSyncJoplin: false,
   refreshSyncSiYuan: false,
   refreshSyncNotion: false,
   memoFolderName: 'Notes',
