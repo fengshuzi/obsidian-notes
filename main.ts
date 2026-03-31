@@ -1036,5 +1036,12 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
     instructionsList.createEl('li', { text: '思源：保持思源内核运行，在设置中开启 API 并填写 Token、笔记本 ID 与路径' });
     instructionsList.createEl('li', { text: 'Notion：在 notion.so 创建 Integration 并复制 Token；把要同步的页面分享给该 Integration；在「要同步的页面」中每行填一个 URL，可多页' });
     instructionsList.createEl('li', { text: '侧边栏「刷新」或命令「刷新（按配置更新）」会按勾选依次执行各来源' });
+
+    const donateSection = containerEl.createDiv({ cls: 'plugin-donate-section' });
+    donateSection.createEl('h3', { text: '☕ 请作者喝杯咖啡' });
+    donateSection.createEl('p', { text: '如果这个插件帮助了你，欢迎扫码打赏，感谢支持！', cls: 'plugin-donate-desc' });
+    const imgWrap = donateSection.createDiv({ cls: 'plugin-donate-qr' });
+    imgWrap.createEl('img', { attr: { src: this.plugin.app.vault.adapter.getResourcePath(`${this.plugin.manifest.dir}/assets/wechat-donate.jpg`), alt: '微信打赏', width: '160' } });
+    imgWrap.createEl('p', { text: '微信扫码打赏', cls: 'plugin-donate-label' });
   }
 }
