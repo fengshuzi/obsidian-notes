@@ -150,7 +150,7 @@ export class NotesStorage {
 
         try {
             // 调用 pandoc 转换
-            const { stdout } = await execAsync(`echo ${JSON.stringify(cleanedHtml)} | pandoc -f html -t gfm`);
+            const { stdout } = await execAsync(`echo ${JSON.stringify(cleanedHtml)} | pandoc -f html -t gfm`, { maxBuffer: 50 * 1024 * 1024 });
             return '\n\n' + stdout.trim() + '\n\n';
         } catch (error) {
             console.error('pandoc 转换失败，回退到正则方案:', error);
@@ -164,70 +164,105 @@ export class NotesStorage {
 
     async getNotes(): Promise<Note[]> {
         try {
-            // 使用 AppleScript 获取备忘录（包含 HTML body）
-            const script = `
+            const batchSize = 20;
+
+            // 先获取备忘录总数
+            const countScript = `
                 tell application "Notes"
-                    set notesList to {}
-                    set targetFolder to folder "${this.folderName}"
-                    repeat with aNote in notes of targetFolder
-                        set noteId to id of aNote
-                        set noteTitle to name of aNote
-                        set noteBody to body of aNote
-                        set notePlaintext to plaintext of aNote
-                        
-                        try
-                            set noteFolder to name of container of aNote
-                        on error
-                            set noteFolder to "${this.folderName}"
-                        end try
-                        
-                        set noteCreation to creation date of aNote as string
-                        set noteMod to modification date of aNote as string
-                        
-                        set noteData to noteId & "|||" & noteTitle & "|||" & notePlaintext & "|||" & noteBody & "|||" & noteFolder & "|||" & noteCreation & "|||" & noteMod
-                        set end of notesList to noteData
-                    end repeat
-                    
-                    set AppleScript's text item delimiters to "###SEPARATOR###"
-                    return notesList as text
+                    return count of notes of folder "${this.folderName}"
                 end tell
             `;
+            const { stdout: countOutput } = await execAsync(
+                `osascript -e '${countScript.replace(/'/g, "'\\''")}'`
+            );
 
-            const { stdout } = await execAsync(`osascript -e '${script.replace(/'/g, "'\\''")}'`);
-
-            if (!stdout || stdout.trim() === "") {
+            const totalCount = parseInt(countOutput.trim());
+            if (isNaN(totalCount) || totalCount === 0) {
                 return [];
             }
 
-            // 解析返回的数据
-            const notesData = stdout.split("###SEPARATOR###");
-            const notes: Note[] = [];
+            console.log(`共 ${totalCount} 条备忘录，分批获取，每批 ${batchSize} 条`);
 
-            for (const noteData of notesData) {
-                if (!noteData.trim()) continue;
+            const allNotes: Note[] = [];
 
-                const parts = noteData.split("|||");
-                if (parts.length >= 7) {
-                    const noteTitle = parts[1].trim();
-                    const htmlBody = parts[3];
+            // 分批获取备忘录，用计数器跳过已处理的笔记
+            for (let offset = 0; offset < totalCount; offset += batchSize) {
+                const start = offset + 1;
+                const end = Math.min(offset + batchSize, totalCount);
 
-                    // 提取附件并转换为 Markdown
-                    const { attachments, markdownBody } = await this.extractAttachments(htmlBody, noteTitle);
+                console.log(`获取第 ${start}-${end} 条备忘录...`);
 
-                    notes.push({
-                        id: parts[0].trim(),
-                        title: noteTitle,
-                        body: markdownBody,
-                        htmlBody: htmlBody,
-                        folder: parts[4].trim(),
-                        creationDate: parts[5].trim(),
-                        modificationDate: parts[6].trim(),
-                        attachments: attachments,
-                    });
+                const script = `
+                    tell application "Notes"
+                        set notesList to {}
+                        set targetFolder to folder "${this.folderName}"
+                        set counter to 0
+                        repeat with aNote in notes of targetFolder
+                            set counter to counter + 1
+                            if counter >= ${start} and counter <= ${end} then
+                                set noteId to id of aNote
+                                set noteTitle to name of aNote
+                                set noteBody to body of aNote
+                                set notePlaintext to plaintext of aNote
+
+                                try
+                                    set noteFolder to name of container of aNote
+                                on error
+                                    set noteFolder to "${this.folderName}"
+                                end try
+
+                                set noteCreation to creation date of aNote as string
+                                set noteMod to modification date of aNote as string
+
+                                set noteData to noteId & "|||" & noteTitle & "|||" & notePlaintext & "|||" & noteBody & "|||" & noteFolder & "|||" & noteCreation & "|||" & noteMod
+                                set end of notesList to noteData
+                            end if
+                            if counter >= ${end} then exit repeat
+                        end repeat
+
+                        set AppleScript's text item delimiters to "###SEPARATOR###"
+                        return notesList as text
+                    end tell
+                `;
+
+                const { stdout } = await execAsync(
+                    `osascript -e '${script.replace(/'/g, "'\\''")}'`,
+                    { maxBuffer: 50 * 1024 * 1024 }
+                );
+
+                if (!stdout || stdout.trim() === "") {
+                    continue;
+                }
+
+                // 解析本批次数据
+                const notesData = stdout.split("###SEPARATOR###");
+
+                for (const noteData of notesData) {
+                    if (!noteData.trim()) continue;
+
+                    const parts = noteData.split("|||");
+                    if (parts.length >= 7) {
+                        const noteTitle = parts[1].trim();
+                        const htmlBody = parts[3];
+
+                        // 提取附件并转换为 Markdown
+                        const { attachments, markdownBody } = await this.extractAttachments(htmlBody, noteTitle);
+
+                        allNotes.push({
+                            id: parts[0].trim(),
+                            title: noteTitle,
+                            body: markdownBody,
+                            htmlBody: htmlBody,
+                            folder: parts[4].trim(),
+                            creationDate: parts[5].trim(),
+                            modificationDate: parts[6].trim(),
+                            attachments: attachments,
+                        });
+                    }
                 }
             }
 
-            return notes;
+            return allNotes;
         } catch (error) {
             console.error("获取备忘录失败:", error);
             throw new Error(`无法获取备忘录: ${error.message}`);
