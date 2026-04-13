@@ -6,7 +6,7 @@ let forceMode = process.argv.includes('--force');
 
 const manifest = JSON.parse(readFileSync('manifest.json', 'utf8'));
 const version = manifest.version;
-const tag = `v${version}`;
+const tag = `${version}`;
 
 console.log(`🚀 准备发布版本: ${tag}${forceMode ? ' (强制模式)' : ''}\n`);
 

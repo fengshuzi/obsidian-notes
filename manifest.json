@@ -3,7 +3,8 @@
   "name": "AppleNotes Sync",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "多源笔记同步到 Obsidian：macOS 备忘录、Joplin、思源笔记、Notion 等，仅手动刷新",
+  "description": "从 macOS 备忘录 App 同步笔记到本地 vault，支持图片和表格等富文本，可配置源文件夹和目标路径，仅手动刷新.",
   "author": "lizhifeng",
+  "authorUrl": "https://github.com/fengshuzi",
   "isDesktopOnly": true
 }
