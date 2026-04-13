@@ -1,6 +1,7 @@
 import { exec } from "child_process";
 import { promisify } from "util";
-import { writeFile, mkdir } from "fs/promises";
+import { readFile as fsReadFile, rename } from "fs/promises";
+import { existsSync, mkdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
@@ -20,8 +21,15 @@ export interface Note {
 
 export interface Attachment {
     filename: string;
+    /** 图片已直接写到磁盘，data 不再使用，保留字段兼容旧调用 */
     data: Buffer;
     format: string;
+}
+
+export interface NotesMeta {
+    id: string;
+    title: string;
+    attachmentCount: number;
 }
 
 export class NotesStorage {
@@ -162,111 +170,196 @@ export class NotesStorage {
         this.folderName = folderName;
     }
 
-    async getNotes(): Promise<Note[]> {
+    /**
+     * 读取文件头 magic bytes 判断图片格式，返回扩展名如 png / jpeg / gif / webp
+     */
+    private async detectImageExt(filePath: string): Promise<string> {
         try {
-            const batchSize = 20;
+            const buf = await fsReadFile(filePath);
+            if (buf[0] === 0x89 && buf[1] === 0x50) return 'png';
+            if (buf[0] === 0xFF && buf[1] === 0xD8) return 'jpeg';
+            if (buf[0] === 0x47 && buf[1] === 0x49) return 'gif';
+            if (buf[0] === 0x52 && buf[1] === 0x49 && buf[6] === 0x57) return 'webp';
+            if (buf[0] === 0x42 && buf[1] === 0x4D) return 'bmp';
+        } catch { /* ignore */ }
+        return 'png'; // 默认 fallback
+    }
 
-            // 先获取备忘录总数
-            const countScript = `
+    /**
+     * 第一步：批量拿所有笔记的元数据（id / title / attachmentCount），stdout 极小
+     */
+    async getNotesMeta(): Promise<NotesMeta[]> {
+        const countScript = `
+            tell application "Notes"
+                return count of notes of folder "${this.folderName}"
+            end tell
+        `;
+        const { stdout: countOut } = await execAsync(
+            `osascript -e '${countScript.replace(/'/g, "'\\''")}'`,
+            { maxBuffer: 1 * 1024 * 1024 }
+        );
+        const total = parseInt(countOut.trim());
+        if (isNaN(total) || total === 0) return [];
+
+        const batchSize = 50;
+        const result: NotesMeta[] = [];
+
+        for (let offset = 0; offset < total; offset += batchSize) {
+            const start = offset + 1;
+            const end = Math.min(offset + batchSize, total);
+            // 只拿 id / title / attachmentCount，不拿 body，stdout 极小
+            const script = `
                 tell application "Notes"
-                    return count of notes of folder "${this.folderName}"
+                    set output to ""
+                    set targetFolder to folder "${this.folderName}"
+                    set counter to 0
+                    repeat with aNote in notes of targetFolder
+                        set counter to counter + 1
+                        if counter < ${start} then
+                        else if counter <= ${end} then
+                            set noteId to id of aNote
+                            set noteTitle to name of aNote
+                            set attCnt to (count of attachments of aNote) as string
+                            set output to output & noteId & "|||" & noteTitle & "|||" & attCnt & "###SEP###"
+                        end if
+                        if counter >= ${end} then exit repeat
+                    end repeat
+                    return output
                 end tell
             `;
-            const { stdout: countOutput } = await execAsync(
-                `osascript -e '${countScript.replace(/'/g, "'\\''")}'`
+            const { stdout } = await execAsync(
+                `osascript -e '${script.replace(/'/g, "'\\''")}'`,
+                { maxBuffer: 10 * 1024 * 1024 }
             );
-
-            const totalCount = parseInt(countOutput.trim());
-            if (isNaN(totalCount) || totalCount === 0) {
-                return [];
-            }
-
-            console.log(`共 ${totalCount} 条备忘录，分批获取，每批 ${batchSize} 条`);
-
-            const allNotes: Note[] = [];
-
-            // 分批获取备忘录，用计数器跳过已处理的笔记
-            for (let offset = 0; offset < totalCount; offset += batchSize) {
-                const start = offset + 1;
-                const end = Math.min(offset + batchSize, totalCount);
-
-                console.log(`获取第 ${start}-${end} 条备忘录...`);
-
-                const script = `
-                    tell application "Notes"
-                        set notesList to {}
-                        set targetFolder to folder "${this.folderName}"
-                        set counter to 0
-                        repeat with aNote in notes of targetFolder
-                            set counter to counter + 1
-                            if counter >= ${start} and counter <= ${end} then
-                                set noteId to id of aNote
-                                set noteTitle to name of aNote
-                                set noteBody to body of aNote
-                                set notePlaintext to plaintext of aNote
-
-                                try
-                                    set noteFolder to name of container of aNote
-                                on error
-                                    set noteFolder to "${this.folderName}"
-                                end try
-
-                                set noteCreation to creation date of aNote as string
-                                set noteMod to modification date of aNote as string
-
-                                set noteData to noteId & "|||" & noteTitle & "|||" & notePlaintext & "|||" & noteBody & "|||" & noteFolder & "|||" & noteCreation & "|||" & noteMod
-                                set end of notesList to noteData
-                            end if
-                            if counter >= ${end} then exit repeat
-                        end repeat
-
-                        set AppleScript's text item delimiters to "###SEPARATOR###"
-                        return notesList as text
-                    end tell
-                `;
-
-                const { stdout } = await execAsync(
-                    `osascript -e '${script.replace(/'/g, "'\\''")}'`,
-                    { maxBuffer: 50 * 1024 * 1024 }
-                );
-
-                if (!stdout || stdout.trim() === "") {
-                    continue;
-                }
-
-                // 解析本批次数据
-                const notesData = stdout.split("###SEPARATOR###");
-
-                for (const noteData of notesData) {
-                    if (!noteData.trim()) continue;
-
-                    const parts = noteData.split("|||");
-                    if (parts.length >= 7) {
-                        const noteTitle = parts[1].trim();
-                        const htmlBody = parts[3];
-
-                        // 提取附件并转换为 Markdown
-                        const { attachments, markdownBody } = await this.extractAttachments(htmlBody, noteTitle);
-
-                        allNotes.push({
-                            id: parts[0].trim(),
-                            title: noteTitle,
-                            body: markdownBody,
-                            htmlBody: htmlBody,
-                            folder: parts[4].trim(),
-                            creationDate: parts[5].trim(),
-                            modificationDate: parts[6].trim(),
-                            attachments: attachments,
-                        });
-                    }
+            for (const chunk of stdout.split('###SEP###')) {
+                const parts = chunk.trim().split('|||');
+                if (parts.length >= 3) {
+                    result.push({
+                        id: parts[0].trim(),
+                        title: parts[1].trim(),
+                        attachmentCount: parseInt(parts[2].trim()) || 0,
+                    });
                 }
             }
-
-            return allNotes;
-        } catch (error) {
-            console.error("获取备忘录失败:", error);
-            throw new Error(`无法获取备忘录: ${error.message}`);
         }
+        return result;
+    }
+
+    /**
+     * 第二步：单独拿一条笔记的 body（HTML），每次只一条，stdout 上限 = 单条文本大小
+     */
+    async getNoteBody(noteId: string): Promise<{ htmlBody: string; folder: string; creationDate: string; modificationDate: string }> {
+        const script = `
+            tell application "Notes"
+                set aNote to note id "${noteId}"
+                set noteBody to body of aNote
+                try
+                    set noteFolder to name of container of aNote
+                on error
+                    set noteFolder to "${this.folderName}"
+                end try
+                set noteCreation to creation date of aNote as string
+                set noteMod to modification date of aNote as string
+                return noteBody & "###META###" & noteFolder & "|||" & noteCreation & "|||" & noteMod
+            end tell
+        `;
+        const { stdout } = await execAsync(
+            `osascript -e '${script.replace(/'/g, "'\\''")}'`,
+            { maxBuffer: 500 * 1024 * 1024 }  // 单条 500MB，应对大量图片的笔记
+        );
+        const metaSep = stdout.lastIndexOf('###META###');
+        const htmlBody = metaSep >= 0 ? stdout.slice(0, metaSep) : stdout;
+        const metaPart = metaSep >= 0 ? stdout.slice(metaSep + 10) : '';
+        const metaParts = metaPart.split('|||');
+        return {
+            htmlBody,
+            folder: metaParts[0]?.trim() || this.folderName,
+            creationDate: metaParts[1]?.trim() || '',
+            modificationDate: metaParts[2]?.trim() || '',
+        };
+    }
+
+    /**
+     * 第三步：把某条笔记的第 N 个 attachment 直接用 AppleScript save 写到指定路径
+     * 完全不走 stdout，彻底绕开 maxBuffer
+     */
+    async saveAttachmentToPath(noteId: string, attIndex: number, destPath: string): Promise<void> {
+        const script = `
+            tell application "Notes"
+                set aNote to note id "${noteId}"
+                save attachment ${attIndex} of aNote in POSIX file "${destPath}"
+            end tell
+        `;
+        await execAsync(
+            `osascript -e '${script.replace(/'/g, "'\\''")}'`,
+            { maxBuffer: 1 * 1024 * 1024 }
+        );
+    }
+
+    /**
+     * 通过 AppleScript save attachment 直接写磁盘，处理图片附件
+     * 不走 stdout base64，彻底解决 maxBuffer 问题
+     */
+    async extractAttachmentsViaAppleScript(
+        noteId: string,
+        noteTitle: string,
+        attachmentCount: number,
+        htmlBody: string,
+        attachmentsAbsPath: string,
+        tmpDir: string
+    ): Promise<{ attachments: Attachment[]; markdownBody: string }> {
+        const safeTitle = this.sanitizeFileName(noteTitle);
+        const attachments: Attachment[] = [];
+
+        // 先把所有 attachment save 到 tmp，探测格式，重命名到 attachments/
+        let imgCounter = 0;
+        for (let i = 1; i <= attachmentCount; i++) {
+            const tmpPath = join(tmpDir, `att-${noteId.replace(/[^a-zA-Z0-9]/g, '_').slice(-16)}-${i}`);
+            try {
+                // 幂等：tmp 里若已存在同名文件先删掉，避免 save 报"已存在"
+                if (existsSync(tmpPath)) {
+                    unlinkSync(tmpPath);
+                }
+                await this.saveAttachmentToPath(noteId, i, tmpPath);
+                if (!existsSync(tmpPath)) continue;
+
+                const ext = await this.detectImageExt(tmpPath);
+                imgCounter++;
+                const filename = `${safeTitle}-${String(imgCounter).padStart(3, '0')}.${ext}`;
+                const destPath = join(attachmentsAbsPath, filename);
+
+                // 幂等：目标已存在则覆盖
+                if (existsSync(destPath)) {
+                    unlinkSync(destPath);
+                }
+                await rename(tmpPath, destPath);
+                attachments.push({ filename, data: Buffer.alloc(0), format: ext });
+            } catch (err: any) {
+                // -10000: 非图片类 attachment（内嵌对象等），静默跳过
+                // 其他错误才打日志
+                if (!err?.message?.includes('-10000') && !err?.message?.includes('AppleEvent')) {
+                    console.warn(`附件 ${i} 跳过 (${noteTitle}):`, err?.message);
+                }
+                if (existsSync(tmpPath)) {
+                    try { unlinkSync(tmpPath); } catch {}
+                }
+            }
+        }
+
+        // HTML 里的 base64 img 替换为已保存的文件名（按顺序对应）
+        let processedHtml = htmlBody.replace(/\r?\n|\r/g, '');
+        let imgIdx = 0;
+        processedHtml = processedHtml.replace(
+            /<img[^>]+src="data:image\/[^;]+;base64,[^"]*"[^>]*>/gi,
+            () => {
+                const att = attachments[imgIdx++];
+                if (!att) return '';
+                return `<img src="attachments/${att.filename}" alt="">`;
+            }
+        );
+
+        const markdownBody = await this.htmlToMarkdown(processedHtml, htmlBody);
+        return { attachments, markdownBody };
     }
 
     /**
@@ -330,96 +423,62 @@ export class NotesStorage {
         return markdown;
     }
 
-    private async extractAttachments(htmlBody: string, noteTitle: string): Promise<{ attachments: Attachment[], markdownBody: string }> {
+    async extractAttachments(htmlBody: string, noteTitle: string): Promise<{ attachments: Attachment[], markdownBody: string }> {
         const attachments: Attachment[] = [];
         let counter = 1;
 
-        // 匹配 <img> 标签中的 base64 图片
-        // 先移除所有换行符，然后再匹配
         let processedHtml = htmlBody.replace(/\r?\n|\r/g, '');
         const imgRegex = /<img[^>]+src="data:image\/([^;]+);base64,([^"]+)"[^>]*>/gi;
         let match;
 
         console.log('\n=== 处理笔记:', noteTitle, '===');
 
-        // 检查是否包含表格
-        const hasTable = htmlBody.includes('<table');
-        if (hasTable) {
-            console.log('✓ 发现表格');
-        }
-
         while ((match = imgRegex.exec(processedHtml)) !== null) {
             try {
-                const format = match[1]; // png, jpeg, gif, etc.
+                const format = match[1];
                 const base64Data = match[2];
                 const fullImgTag = match[0];
-
-                console.log(`✓ 找到图片 ${counter}: 格式=${format}`);
-
-                // 解码 base64 数据
                 const buffer = Buffer.from(base64Data, 'base64');
-
                 const filename = `${this.sanitizeFileName(noteTitle)}-${String(counter).padStart(3, '0')}.${format}`;
-
-                attachments.push({
-                    filename: filename,
-                    data: buffer,
-                    format: format,
-                });
-
-                // 替换为普通的 HTML img 标签，让 Turndown 来转换
+                attachments.push({ filename, data: buffer, format });
                 const imgTag = `<img src="attachments/${filename}" alt="">`;
                 processedHtml = processedHtml.replace(fullImgTag, imgTag);
-
                 counter++;
             } catch (error) {
                 console.error("✗ 解析图片失败:", error);
             }
         }
 
-        if (attachments.length > 0) {
-            console.log(`✓ 共提取 ${attachments.length} 张图片`);
-        }
+        const markdownBody = await this.htmlToMarkdown(processedHtml, htmlBody);
+        return { attachments, markdownBody };
+    }
 
-        // 先用 Turndown 转换 HTML 为 Markdown
+    /** 将处理过的 HTML 转为 Markdown（含表格处理） */
+    private async htmlToMarkdown(processedHtml: string, originalHtml: string): Promise<string> {
+        const hasTable = originalHtml.includes('<table');
+
         let markdownBody = this.turndownService.turndown(processedHtml);
 
-        // 处理表格（如果有）- 在 Markdown 中替换
         if (hasTable) {
-            // 提取原始 HTML 中的所有表格
-            const tableMatches = htmlBody.match(/<table[^>]*>[\s\S]*?<\/table>/gi);
+            const tableMatches = originalHtml.match(/<table[^>]*>[\s\S]*?<\/table>/gi);
             if (tableMatches) {
                 for (const tableHtml of tableMatches) {
-                    // 根据 pandoc 可用性选择转换方案
                     let markdownTable: string;
                     if (this.hasPandoc) {
                         markdownTable = await this.convertTableWithPandoc(tableHtml);
                     } else {
                         markdownTable = this.convertTableToMarkdown(tableHtml);
                     }
-                    // 在 Markdown 中查找并替换对应的 HTML 表格
-                    // Turndown 可能保留了原始 HTML，所以直接替换
                     markdownBody = markdownBody.replace(/<table[^>]*>[\s\S]*?<\/table>/i, markdownTable);
                 }
-                console.log('✓ 表格转换完成');
             }
         }
 
-        // 清理开头的所有空白字符（换行、空格、br 等）
         markdownBody = markdownBody.replace(/^[\s\n\r<br>\/\\]+/, '');
-
-        // 清理多余的换行（连续3个以上换行替换为2个）
         markdownBody = markdownBody.replace(/\n{3,}/g, '\n\n');
-
-        // 清理行尾的空格
         markdownBody = markdownBody.replace(/ +$/gm, '');
-
-        // 清理结尾的多余空行
         markdownBody = markdownBody.replace(/\n+$/, '\n');
-
-        console.log('=== 处理完成 ===\n');
-
-        return { attachments, markdownBody };
+        return markdownBody;
     }
 
     private sanitizeFileName(name: string): string {
@@ -430,21 +489,4 @@ export class NotesStorage {
             .substring(0, 200);
     }
 
-    async saveAttachments(attachments: Attachment[], attachmentsDir: string): Promise<void> {
-        if (attachments.length === 0) return;
-
-        try {
-            // 确保附件目录存在
-            await mkdir(attachmentsDir, { recursive: true });
-
-            // 保存每个附件
-            for (const attachment of attachments) {
-                const filePath = join(attachmentsDir, attachment.filename);
-                await writeFile(filePath, attachment.data);
-            }
-        } catch (error) {
-            console.error("保存附件失败:", error);
-            throw error;
-        }
-    }
 }

@@ -190,56 +190,90 @@ export default class ObsidianNotesPlugin extends Plugin {
     }
     try {
       new Notice('开始同步 macOS 备忘录...');
-      const notes = await this.notesStorage.getNotes();
-      if (notes.length === 0) {
-        new Notice('未在 macOS 备忘录中找到笔记');
-        return;
-      }
+
       const folderPath = normalizePath(this.settings.memoNotesFolder);
-      let folder = this.app.vault.getAbstractFileByPath(folderPath);
-      if (!folder) {
+      if (!this.app.vault.getAbstractFileByPath(folderPath)) {
         await this.app.vault.createFolder(folderPath);
       }
       const attachmentsPath = normalizePath(`${folderPath}/attachments`);
-      let attachmentsFolder = this.app.vault.getAbstractFileByPath(attachmentsPath);
-      if (!attachmentsFolder) {
+      if (!this.app.vault.getAbstractFileByPath(attachmentsPath)) {
         await this.app.vault.createFolder(attachmentsPath);
       }
+
+      // attachments 绝对路径，供 AppleScript save attachment 直接写入
+      const vaultPath = (this.app.vault.adapter as any).basePath;
+      const attachmentsAbsPath = path.join(vaultPath, ...attachmentsPath.split('/'));
+
+      // 先拿所有元数据（不含图片，stdout 极小）
+      const metas = await this.notesStorage.getNotesMeta();
+      if (metas.length === 0) {
+        new Notice('未在 macOS 备忘录中找到笔记');
+        return;
+      }
+
       let syncCount = 0;
       let imageCount = 0;
-      for (const note of notes) {
-        const fileName = this.sanitizeMemoFileName(note.title || '未命名笔记');
-        const filePath = normalizePath(`${folderPath}/${fileName}.md`);
-        if (note.attachments && note.attachments.length > 0) {
-          for (const attachment of note.attachments) {
-            const attachmentPath = normalizePath(`${attachmentsPath}/${attachment.filename}`);
-            const existingAttachment = this.app.vault.getAbstractFileByPath(attachmentPath);
-            const arrayBuffer = attachment.data.buffer.slice(
-              attachment.data.byteOffset,
-              attachment.data.byteOffset + attachment.data.byteLength
-            ) as ArrayBuffer;
-            if (existingAttachment instanceof TFile) {
-              await this.app.vault.modifyBinary(existingAttachment, arrayBuffer);
-            } else {
-              await this.app.vault.createBinary(attachmentPath, arrayBuffer);
+      const failedNotes: string[] = [];
+
+      for (const meta of metas) {
+        try {
+          // 逐条拿 body
+          const { htmlBody, folder, creationDate, modificationDate } =
+            await this.notesStorage.getNoteBody(meta.id);
+
+          let markdownBody: string;
+          let attachments: { filename: string }[] = [];
+
+          if (meta.attachmentCount > 0) {
+            // 图片直接 save 到 attachments/.tmp/，再重命名，不走 stdout
+            const tmpDir = path.join(vaultPath, ...attachmentsPath.split('/'), '.tmp');
+            if (!fs.existsSync(tmpDir)) {
+              fs.mkdirSync(tmpDir, { recursive: true });
             }
+            const result = await this.notesStorage.extractAttachmentsViaAppleScript(
+              meta.id, meta.title, meta.attachmentCount,
+              htmlBody, attachmentsAbsPath, tmpDir
+            );
+            markdownBody = result.markdownBody;
+            attachments = result.attachments;
+            imageCount += attachments.length;
+          } else {
+            const result = await this.notesStorage.extractAttachments(htmlBody, meta.title);
+            markdownBody = result.markdownBody;
           }
-          imageCount += note.attachments.length;
-        }
-        const content = note.body;
-        const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-        if (existingFile instanceof TFile) {
-          const existingContent = await this.app.vault.read(existingFile);
-          if (existingContent !== content) {
-            await this.app.vault.modify(existingFile, content);
+
+          const fileName = this.sanitizeMemoFileName(meta.title || '未命名笔记');
+          const filePath = normalizePath(`${folderPath}/${fileName}.md`);
+          const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+          if (existingFile instanceof TFile) {
+            const existingContent = await this.app.vault.read(existingFile);
+            if (existingContent !== markdownBody) {
+              await this.app.vault.modify(existingFile, markdownBody);
+              syncCount++;
+            }
+          } else {
+            await this.app.vault.create(filePath, markdownBody);
             syncCount++;
           }
-        } else {
-          await this.app.vault.create(filePath, content);
-          syncCount++;
+        } catch (err: any) {
+          console.error(`同步笔记失败: ${meta.title}`, err);
+          failedNotes.push(meta.title || '未命名笔记');
         }
       }
-      new Notice(`macOS 备忘录同步完成：更新 ${syncCount} 个笔记，${imageCount} 张图片`);
+
+      // 清理 .tmp 目录
+      const tmpDir = path.join(vaultPath, ...attachmentsPath.split('/'), '.tmp');
+      if (fs.existsSync(tmpDir)) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+
+      const failMsg = failedNotes.length > 0
+        ? `，${failedNotes.length} 个失败：${failedNotes.slice(0, 3).join('、')}${failedNotes.length > 3 ? '...' : ''}`
+        : '';
+      new Notice(`macOS 备忘录同步完成：更新 ${syncCount} 个笔记，${imageCount} 张图片${failMsg}`);
+      if (failedNotes.length > 0) {
+        console.error('同步失败的笔记：', failedNotes);
+      }
     } catch (error: any) {
       console.error('同步 macOS 备忘录失败:', error);
       new Notice(`同步失败: ${error?.message || error}`);
