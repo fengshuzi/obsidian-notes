@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, Notice, Platform, TFile, normalizePath } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, Notice, Platform, TFile, normalizePath, FileSystemAdapter } from 'obsidian';
 import * as fs from 'fs';
 import * as path from 'path';
 import { NotesStorage } from './src/storage';
@@ -74,9 +74,7 @@ export default class ObsidianNotesPlugin extends Plugin {
         await this.app.vault.createFolder(attachmentsPath);
       }
 
-      // attachments 绝对路径，供 AppleScript save attachment 直接写入
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
-      const vaultPath = (this.app.vault.adapter as any).basePath as string;
+      const vaultPath: string = (this.app.vault.adapter as FileSystemAdapter).getBasePath();
       const attachmentsAbsPath = path.join(vaultPath, ...attachmentsPath.split('/'));
 
       // 先拿所有元数据（不含图片，stdout 极小）
@@ -175,16 +173,13 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // eslint-disable-next-line obsidianmd/ui/sentence-case
-    new Setting(containerEl).setName('Obsidian Notes 设置').setHeading();
+    new Setting(containerEl).setName('Obsidian notes').setHeading();
 
     new Setting(containerEl)
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
-      .setName('备忘录 App 内文件夹名称')
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
-      .setDesc('macOS 备忘录 App 中要同步的文件夹名（默认：Notes）')
+      .setName('Memo app folder name')
+      .setDesc('Folder name in macOS notes app to sync (default: notes)')
       .addText(text => text
-        .setPlaceholder('备忘录文件夹名')
+        .setPlaceholder('Memo folder name')
         .setValue(this.plugin.settings.memoFolderName)
         .onChange(async (value) => {
           this.plugin.settings.memoFolderName = value || 'Notes';
@@ -192,10 +187,10 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Obsidian 目标文件夹')
-      .setDesc('macOS 备忘录中的笔记将导入到此文件夹（默认：备忘录）')
+      .setName('Obsidian target folder')
+      .setDesc('Notes from macOS memo will be imported to this folder (default: memo)')
       .addText(text => text
-        .setPlaceholder('备忘录')
+        .setPlaceholder('Memo')
         .setValue(this.plugin.settings.memoNotesFolder)
         .onChange(async (value) => {
           this.plugin.settings.memoNotesFolder = value || '备忘录';
@@ -203,8 +198,8 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
         }));
 
     const donateSection = containerEl.createDiv({ cls: 'plugin-donate-section' });
-    new Setting(donateSection).setName('☕ 请作者喝杯咖啡').setHeading();
-    donateSection.createEl('p', { text: '如果这个插件帮助了你，欢迎请作者喝杯咖啡 ☕', cls: 'plugin-donate-desc' });
+    new Setting(donateSection).setName('☕ buy me a coffee').setHeading();
+    donateSection.createEl('p', { text: 'If this plugin helped you, feel free to buy me a coffee ☕', cls: 'plugin-donate-desc' });
     const imgWrap = donateSection.createDiv({ cls: 'plugin-donate-qr' });
     imgWrap.createEl('img', { attr: { src: this.plugin.app.vault.adapter.getResourcePath(`${this.plugin.manifest.dir}/assets/wechat-donate.jpg`), alt: '微信打赏', width: '160' } });
     imgWrap.createEl('p', { text: '微信扫码', cls: 'plugin-donate-label' });
