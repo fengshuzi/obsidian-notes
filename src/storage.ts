@@ -1,7 +1,7 @@
-import { exec } from "child_process";
+import { exec, execSync } from "child_process";
 import { promisify } from "util";
 import { readFile as fsReadFile, rename } from "fs/promises";
-import { existsSync, mkdirSync, unlinkSync } from "fs";
+import { existsSync, unlinkSync } from "fs";
 import { join } from "path";
 import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
@@ -131,13 +131,12 @@ export class NotesStorage {
      */
     private checkPandocAvailability(): void {
         try {
-            const { execSync } = require('child_process');
             execSync('which pandoc', { stdio: 'ignore' });
             this.hasPandoc = true;
-            console.log('✓ 检测到 pandoc，将使用 pandoc 转换表格');
+            console.debug('✓ 检测到 pandoc，将使用 pandoc 转换表格');
         } catch {
             this.hasPandoc = false;
-            console.log('✗ 未检测到 pandoc，将使用正则方案转换表格');
+            console.debug('✗ 未检测到 pandoc，将使用正则方案转换表格');
         }
     }
 
@@ -334,14 +333,15 @@ export class NotesStorage {
                 }
                 await rename(tmpPath, destPath);
                 attachments.push({ filename, data: Buffer.alloc(0), format: ext });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 // -10000: 非图片类 attachment（内嵌对象等），静默跳过
                 // 其他错误才打日志
-                if (!err?.message?.includes('-10000') && !err?.message?.includes('AppleEvent')) {
-                    console.warn(`附件 ${i} 跳过 (${noteTitle}):`, err?.message);
+                const msg = err instanceof Error ? err.message : JSON.stringify(err);
+                if (!msg.includes('-10000') && !msg.includes('AppleEvent')) {
+                    console.warn(`附件 ${i} 跳过 (${noteTitle}):`, msg);
                 }
                 if (existsSync(tmpPath)) {
-                    try { unlinkSync(tmpPath); } catch {}
+                    try { unlinkSync(tmpPath); } catch { /* ignore cleanup error */ }
                 }
             }
         }
@@ -431,7 +431,7 @@ export class NotesStorage {
         const imgRegex = /<img[^>]+src="data:image\/([^;]+);base64,([^"]+)"[^>]*>/gi;
         let match;
 
-        console.log('\n=== 处理笔记:', noteTitle, '===');
+        console.debug('\n=== 处理笔记:', noteTitle, '===');
 
         while ((match = imgRegex.exec(processedHtml)) !== null) {
             try {
@@ -474,7 +474,7 @@ export class NotesStorage {
             }
         }
 
-        markdownBody = markdownBody.replace(/^[\s\n\r<br>\/\\]+/, '');
+        markdownBody = markdownBody.replace(/^[\s\n\r<br>/\\]+/, '');
         markdownBody = markdownBody.replace(/\n{3,}/g, '\n\n');
         markdownBody = markdownBody.replace(/ +$/gm, '');
         markdownBody = markdownBody.replace(/\n+$/, '\n');

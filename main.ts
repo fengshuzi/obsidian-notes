@@ -38,7 +38,8 @@ export default class ObsidianNotesPlugin extends Plugin {
   }
 
   async loadSettings() {
-    const saved = await this.loadData() || {};
+    interface SavedSettings { memoFolderName?: string; memoNotesFolder?: string; }
+    const saved = (await this.loadData() as SavedSettings | null) ?? {};
     this.settings = {
       memoFolderName: saved.memoFolderName ?? DEFAULT_SETTINGS.memoFolderName,
       memoNotesFolder: saved.memoNotesFolder ?? DEFAULT_SETTINGS.memoNotesFolder,
@@ -74,7 +75,8 @@ export default class ObsidianNotesPlugin extends Plugin {
       }
 
       // attachments 绝对路径，供 AppleScript save attachment 直接写入
-      const vaultPath = (this.app.vault.adapter as any).basePath;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+      const vaultPath = (this.app.vault.adapter as any).basePath as string;
       const attachmentsAbsPath = path.join(vaultPath, ...attachmentsPath.split('/'));
 
       // 先拿所有元数据（不含图片，stdout 极小）
@@ -127,7 +129,7 @@ export default class ObsidianNotesPlugin extends Plugin {
             await this.app.vault.create(filePath, markdownBody);
             syncCount++;
           }
-        } catch (err: any) {
+        } catch (err: unknown) {
           console.error(`同步笔记失败: ${meta.title}`, err);
           failedNotes.push(meta.title || '未命名笔记');
         }
@@ -146,9 +148,9 @@ export default class ObsidianNotesPlugin extends Plugin {
       if (failedNotes.length > 0) {
         console.error('同步失败的笔记：', failedNotes);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('同步 macOS 备忘录失败:', error);
-      new Notice(`同步失败: ${error?.message || error}`);
+      new Notice(`同步失败: ${error instanceof Error ? error.message : JSON.stringify(error)}`);
     }
   }
 
@@ -173,13 +175,16 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Obsidian Notes 设置' });
+    // eslint-disable-next-line obsidianmd/ui/sentence-case
+    new Setting(containerEl).setName('Obsidian Notes 设置').setHeading();
 
     new Setting(containerEl)
+      // eslint-disable-next-line obsidianmd/ui/sentence-case
       .setName('备忘录 App 内文件夹名称')
+      // eslint-disable-next-line obsidianmd/ui/sentence-case
       .setDesc('macOS 备忘录 App 中要同步的文件夹名（默认：Notes）')
       .addText(text => text
-        .setPlaceholder('Notes')
+        .setPlaceholder('备忘录文件夹名')
         .setValue(this.plugin.settings.memoFolderName)
         .onChange(async (value) => {
           this.plugin.settings.memoFolderName = value || 'Notes';
@@ -198,7 +203,7 @@ class ObsidianNotesSettingTab extends PluginSettingTab {
         }));
 
     const donateSection = containerEl.createDiv({ cls: 'plugin-donate-section' });
-    donateSection.createEl('h3', { text: '☕ 请作者喝杯咖啡' });
+    new Setting(donateSection).setName('☕ 请作者喝杯咖啡').setHeading();
     donateSection.createEl('p', { text: '如果这个插件帮助了你，欢迎请作者喝杯咖啡 ☕', cls: 'plugin-donate-desc' });
     const imgWrap = donateSection.createDiv({ cls: 'plugin-donate-qr' });
     imgWrap.createEl('img', { attr: { src: this.plugin.app.vault.adapter.getResourcePath(`${this.plugin.manifest.dir}/assets/wechat-donate.jpg`), alt: '微信打赏', width: '160' } });
